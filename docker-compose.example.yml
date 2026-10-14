@@ -1,0 +1,278 @@
+# =============================================================================
+# EXEMPLO DE ESTUDO: cluster Kafka com 3 brokers
+# =============================================================================
+# Variação do docker-compose.yml com 3 brokers em vez de 1.
+# Para subir este arquivo no lugar do principal:
+#   docker compose -f docker-compose.example.yml up -d
+#
+# Interfaces Web
+#   MinIO     http://localhost:9001
+#   pgAdmin   http://localhost:5433
+#   AKHQ      http://localhost:8080/ui
+#   Kafka UI  http://localhost:8081
+#
+# -----------------------------------------------------------------------------
+# O QUE MUDA EM RELAÇÃO A 1 BROKER (onde reconfigurar)
+# -----------------------------------------------------------------------------
+# 1. Endereço do Kafka nos clientes: listar os 3 brokers
+#      kafka-broker-1:29092,kafka-broker-2:29092,kafka-broker-3:29092
+#    Onde: AKHQ (bootstrap.servers), Kafka UI (KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS),
+#          Kafka Connect (CONNECT_BOOTSTRAP_SERVERS, Parte 4),
+#          MinIO (MINIO_NOTIFY_KAFKA_BROKERS_*, Parte 7)
+#
+# 2. depends_on dos clientes: esperar os 3 brokers ficarem healthy
+#
+# 3. Kafka Connect (Parte 4): tópicos internos com 3 réplicas
+#      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
+#      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
+#      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
+#
+# 4. Conector Debezium (Parte 5): tópicos criados com 3 réplicas
+#      "topic.creation.default.replication.factor": "3"
+#
+# 5. Comandos no terminal: o serviço não se chama mais "kafka-broker"
+#      docker compose exec kafka-broker-1 kafka-topics --bootstrap-server localhost:9092 ...
+#    Na sua máquina, cada broker tem sua porta: 9092, 9093, 9094
+#
+# 6. Criar tópicos: --replication-factor pode ir até 3 (nº de brokers)
+#
+# 7. Conferir o cluster no Zookeeper: ls /brokers/ids  →  [1, 2, 3]
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Blocos reaproveitáveis (âncoras YAML)
+# O prefixo "x-" faz o Compose ignorar o bloco como serviço;
+# "&nome" cria a âncora e "<<: *nome" cola o conteúdo onde for usado.
+# -----------------------------------------------------------------------------
+
+# Configuração comum aos 3 brokers
+x-kafka-comum: &kafka-comum
+  image: confluentinc/cp-kafka:7.6.1
+  restart: unless-stopped
+  depends_on:
+    zookeeper:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 > /dev/null 2>&1"]
+    interval: 10s
+    timeout: 10s
+    retries: 5
+    start_period: 30s
+  # Produção (Linux): garante limite de arquivos abertos para o Kafka.
+  # No Docker Desktop o padrão já é maior, então aqui não tem efeito prático.
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+  networks: [dados]
+
+# Variáveis comuns aos 3 brokers
+x-kafka-env: &kafka-env
+  KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  # Replicação: cada partição tem 3 cópias (uma em cada broker).
+  # MIN_INSYNC_REPLICAS = 2: a escrita só é confirmada quando 2 cópias gravaram,
+  # então 1 broker pode cair sem perda de dados.
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  # Tópicos internos do Kafka (offsets dos consumers e transações)
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  # Partições padrão de um tópico novo
+  KAFKA_NUM_PARTITIONS: 3
+  # Retenção padrão: 7 dias (7 × 24 = 168 h). É o valor default do Kafka,
+  # declarado aqui para ficar documentado. Tópicos podem sobrescrever (retention.ms).
+  KAFKA_LOG_RETENTION_HOURS: 168
+
+# Os clientes só sobem quando os 3 brokers estiverem prontos
+x-depende-kafka: &depende-kafka
+  kafka-broker-1:
+    condition: service_healthy
+  kafka-broker-2:
+    condition: service_healthy
+  kafka-broker-3:
+    condition: service_healthy
+
+name: lab-eda-kafka-connect-cluster
+
+services:
+
+  # PostgreSQL com o WAL em "logical", para o Debezium ler as alterações (CDC)
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER}"]
+      interval: 10s
+      retries: 5
+    networks: [dados]
+
+  pg-admin:
+    image: dpage/pgadmin4:9.0
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "5433:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [dados]
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    restart: unless-stopped
+    command: server --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_storage:/data
+    networks: [dados]
+
+  # Cria os buckets e termina (Exited 0). Sem "restart": roda uma vez só.
+  mc:
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set myminio http://minio:9000 ${MINIO_USER} ${MINIO_PASSWORD}; do sleep 1; done;
+      mc mb --ignore-existing myminio/bronze;
+      mc mb --ignore-existing myminio/silver;
+      mc mb --ignore-existing myminio/gold;
+      "
+    networks: [dados]
+
+  # Em produção seriam 3 Zookeepers (quórum); com 1, ele é ponto único de falha
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      # A imagem ignora ZOOKEEPER_4LW_COMMANDS_WHITELIST; via propriedade Java funciona
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - zk_data:/var/lib/zookeeper/data
+      - zk_log:/var/lib/zookeeper/log
+    ports:
+      - "2181:2181" # Em produção isso não é exposto
+    networks: [dados]
+
+  # ---------------------------------------------------------------------------
+  # Brokers: muda só o nome, o ID, a porta externa e o volume
+  #   Listener interno (29092): igual nos 3, pois cada broker é um host diferente
+  #   Listener externo (9092/9093/9094): diferente, pois na sua máquina só há
+  #   um "localhost" e duas aplicações não podem usar a mesma porta
+  # ---------------------------------------------------------------------------
+  kafka-broker-1:
+    <<: *kafka-comum
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:29092,PLAINTEXT_HOST://localhost:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka1_data:/var/lib/kafka/data
+
+  kafka-broker-2:
+    <<: *kafka-comum
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:29092,PLAINTEXT_HOST://localhost:9093
+    ports:
+      - "9093:9093"
+    volumes:
+      - kafka2_data:/var/lib/kafka/data
+
+  kafka-broker-3:
+    <<: *kafka-comum
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:29092,PLAINTEXT_HOST://localhost:9094
+    ports:
+      - "9094:9094"
+    volumes:
+      - kafka3_data:/var/lib/kafka/data
+
+  # Interface web do Kafka (versão do material)
+  akhq:
+    image: tchiotludo/akhq:0.20.0
+    restart: unless-stopped
+    depends_on: *depende-kafka
+    environment:
+      # Configuração do AKHQ: um YAML inteiro dentro da variável
+      # A conexão com o Kafka Connect ("connect:") entra na Parte 4
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            lab-eda:
+              properties:
+                bootstrap.servers: "kafka-broker-1:29092,kafka-broker-2:29092,kafka-broker-3:29092"
+    ports:
+      - "8080:8080"
+    networks: [dados]
+
+  # Interface web alternativa (Kafka UI / kafbat), na porta 8081 para não
+  # conflitar com o AKHQ. Login com usuário e senha do .env.
+  # A conexão com o Kafka Connect entra na Parte 4:
+  #   KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME / KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    restart: unless-stopped
+    depends_on: *depende-kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: lab-eda
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker-1:29092,kafka-broker-2:29092,kafka-broker-3:29092
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USER}
+      SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}
+    ports:
+      - "8081:8080" # sua máquina 8081 → container 8080
+    networks: [dados]
+
+volumes:
+  pg_data:
+  pgadmin_data:
+  minio_storage:
+  zk_data:
+  zk_log:
+  kafka1_data:
+  kafka2_data:
+  kafka3_data:
+
+networks:
+  dados:

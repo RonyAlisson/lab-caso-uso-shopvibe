@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "shopvibe-postgres",
+      "Group": "Servers",
+      "Host": "postgres", 
+      "Port": 5432,
+      "MaintenanceDB": "shopvibe",
+      "Username": "shopvibe",
+      "SSLMode": "prefer"
+    }
+  }
+}

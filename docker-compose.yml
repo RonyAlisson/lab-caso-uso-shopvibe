@@ -1,0 +1,214 @@
+# =====================================================================================================================
+# Parte destinado a links rapidos para acesso visual 
+# Kafka UI - akhq: http://localhost:8080
+# pgAdmin:  http://localhost:8091
+# minio:    http://localhost:9001
+# =====================================================================================================================
+
+name: shopvibe
+
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: shopvibe-postgres
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d #Inicializa o banco de dados com as tabelas pré criadas
+    healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+        interval: 10s
+        retries: 5
+    networks:
+      - shopvibe
+
+  pgadmin:
+    image: dpage/pgadmin4:9.0
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "8091:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shopvibe      
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    command: server --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_storage:/data
+    networks:
+      - shopvibe 
+
+  # Serviço para criar os buckets dentro do minio
+  mc:
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    depends_on:
+      - minio
+    environment:
+      MINIO_USER: ${MINIO_USER}
+      MINIO_PASSWORD: ${MINIO_PASSWORD}
+    # $$ escapa a interpolação do Compose: quem resolve as variáveis é o shell do container
+    entrypoint: > # Criação dos buckets, bronze, silver e gold
+      /bin/sh -c "
+      until mc alias set myminio http://minio:9000 $$MINIO_USER $$MINIO_PASSWORD; do sleep 1; done;
+      mc mb --ignore-existing myminio/bronze;
+      mc mb --ignore-existing myminio/silver;
+      mc mb --ignore-existing myminio/gold;
+      "
+    networks:
+      - shopvibe 
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+    volumes:
+      - zk_data:/var/lib/zookeeper/data
+      - zk_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "2181:2181" # Em produção isso não é exposto
+    networks:
+      - shopvibe
+
+  kafka-broker:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    ulimits:                                        
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - shopvibe
+
+  # Kafka Connect: executa os conectores Source (Debezium) e Sink (S3)
+  connect:
+    image: fernandos/kafka-connet-debezium-lab:v215
+    restart: unless-stopped
+    command: /opt/kafka/kafka_connect_run.sh
+    environment:
+      KAFKA_CONNECT_BOOTSTRAP_SERVERS: kafka-broker:29092
+      KAFKA_LOG4J_OPTS: "-Dlog4j.configuration=file:/opt/kafka/config/connect-log4j.properties"
+      KAFKA_CONNECT_CONFIGURATION: |
+        group.id=connect
+        key.converter=org.apache.kafka.connect.json.JsonConverter
+        value.converter=org.apache.kafka.connect.json.JsonConverter
+        key.converter.schemas.enable=false
+        value.converter.schemas.enable=false
+        config.storage.topic=connect-configs
+        config.storage.replication.factor=1
+        offset.storage.topic=connect-offsets
+        offset.storage.replication.factor=1
+        status.storage.topic=connect-status
+        status.storage.replication.factor=1
+        config.providers=env
+        config.providers.env.class=org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      PG_DB: ${POSTGRES_DB}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    volumes:
+      - ./conectores:/conectores
+    ports:
+      - "8083:8083"   # API REST (em produção: não exposta ou protegida)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/ > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      kafka-broker:
+        condition: service_healthy
+    networks:
+      - shopvibe
+
+  # Interface web do Kafka (versão do material)
+  akhq:
+    image: tchiotludo/akhq:0.20.0
+    restart: unless-stopped
+    environment:
+      # Configuração do AKHQ: um YAML inteiro dentro da variável
+      # A conexão com o Kafka Connect ("connect:") entra na Parte 4
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            lab-eda:
+              properties:
+                bootstrap.servers: "kafka-broker:29092"
+              connect:
+                - name: "connect"
+                  url: "http://connect:8083"
+    depends_on:
+      kafka-broker:
+        condition: service_healthy
+      connect:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    networks:
+      - shopvibe
+
+volumes:
+  pg_data:
+  pgadmin_data:
+  minio_storage:
+  zk_data:
+  zk_log:
+  kafka_data:
+
+networks:
+  shopvibe:
+    name: shopvibe
