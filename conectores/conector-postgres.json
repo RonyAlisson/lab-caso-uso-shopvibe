@@ -6,8 +6,8 @@
   "database.user": "${env:PG_USER}",
   "database.password": "${env:PG_PASSWORD}",
   "database.dbname": "${env:PG_DB}",
-  "topic.prefix": "postgres",
-  "schema.include.list": "public",
+  "topic.prefix": "cdc",
+  "schema.include.list": "public", 
   "plugin.name": "pgoutput",
   "decimal.handling.mode": "string"
 }
