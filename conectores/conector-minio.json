@@ -1,6 +1,6 @@
 {
   "connector.class": "io.confluent.connect.s3.S3SinkConnector",
-  "topics": "postgres.public.orders,postgres.public.order_items",
+  "topics": "cdc.public.orders,cdc.public.order_items",
   "s3.bucket.name": "bronze",
   "store.url": "http://minio:9000",
   "flush.size": 3,

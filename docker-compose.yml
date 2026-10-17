@@ -46,7 +46,8 @@ services:
       - shopvibe      
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    #quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
     command: server --console-address ":9001" /data
     environment:
       MINIO_ROOT_USER: ${MINIO_USER}
@@ -61,7 +62,8 @@ services:
 
   # Serviço para criar os buckets dentro do minio
   mc:
-    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z 
+    #quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
     depends_on:
       - minio
     environment:
