@@ -26,6 +26,9 @@ Fonte editável do diagrama: [docs/arquitetura.drawio](docs/arquitetura.drawio).
 ## 1. Subir e parar
 
 ```powershell
+Se necessario Limpar tudo
+docker compose down -v                  #Apaga tudo que esta na seção de volumes
+
 docker compose up -d        # sobe tudo
 docker compose ps -a        # postgres/zookeeper/kafka-broker/connect = healthy; mc = Exited (0)
 docker compose down         # para (mantém os dados)
@@ -125,6 +128,14 @@ JOIN (VALUES (101,10,2,75.00), (102,20,1,89.90), (103,30,1,200.50))
   AS v(customer_id, product_id, quantity, price) USING (customer_id);
 
 ```
+
+**Opcional: carga de 100 registros.** O arquivo [docs/carga-100.sql](docs/carga-100.sql) insere 100 pedidos e 100 itens, gerando 100 eventos em cada tópico. Use uma das duas formas:
+
+- **PowerShell**, na pasta do projeto:
+  ```powershell
+  Get-Content .\docs\carga-100.sql | docker compose exec -T postgres psql -U shopvibe -d shopvibe
+  ```
+- **pgAdmin**: abra o arquivo no VS Code, copie todo o conteúdo, cole no **Query Tool** do banco `shopvibe` e execute com **Alt + F5**.
 
 **4. Veja o consumer (S3 Sink) consumindo os tópicos:**
 
