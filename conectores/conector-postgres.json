@@ -1,13 +1,18 @@
 {
   "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
   "tasks.max": "1",
+  "topic.creation.default.partitions": 1,
+  "topic.creation.default.replication.factor": 1,
   "database.hostname": "postgres",
   "database.port": "5432",
   "database.user": "${env:PG_USER}",
   "database.password": "${env:PG_PASSWORD}",
   "database.dbname": "${env:PG_DB}",
   "topic.prefix": "cdc",
-  "schema.include.list": "public", 
+  "slot.name": "debezium_shopvibe",
+  "schema.include.list": "vendas", 
+  "publication.name": "dbz_pub_shopvibe",
+  "publication.autocreate.mode": "filtered",
   "plugin.name": "pgoutput",
   "decimal.handling.mode": "string"
 }

@@ -1,6 +1,6 @@
 {
   "connector.class": "io.confluent.connect.s3.S3SinkConnector",
-  "topics": "cdc.public.orders,cdc.public.order_items",
+  "topics": "cdc.vendas.orders,cdc.vendas.order_items",
   "s3.bucket.name": "bronze",
   "store.url": "http://minio:9000",
   "flush.size": 3,
@@ -9,5 +9,6 @@
   "s3.region": "us-east-1",
   "aws.access.key.id": "${env:MINIO_ACCESS_KEY}",
   "aws.secret.access.key": "${env:MINIO_SECRET_KEY}",
-  "behavior.on.null.values": "ignore"
+  "behavior.on.null.values": "ignore",
+  "tasks.max": "1"
 }

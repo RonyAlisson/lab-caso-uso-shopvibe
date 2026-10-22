@@ -74,8 +74,6 @@ services:
       /bin/sh -c "
       until mc alias set myminio http://minio:9000 $$MINIO_USER $$MINIO_PASSWORD; do sleep 1; done;
       mc mb --ignore-existing myminio/bronze;
-      mc mb --ignore-existing myminio/silver;
-      mc mb --ignore-existing myminio/gold;
       "
     networks:
       - shopvibe 
@@ -114,6 +112,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
