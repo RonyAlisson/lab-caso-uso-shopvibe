@@ -114,6 +114,8 @@ docker compose exec kafka-broker kafka-console-consumer --bootstrap-server local
 
 Acrescente `--from-beginning` para ver também os eventos antigos. Para sair, use `Ctrl + C`.
 
+Antes do primeiro INSERT, o consumer mostra `WARN ... UNKNOWN_TOPIC_OR_PARTITION` em loop. Isso é normal: o tópico ainda não existe, e os avisos param quando o Debezium o cria.
+
 **3. Rode no pgAdmin** (**Query Tool** no banco `shopvibe`):
 
 ```sql
@@ -124,7 +126,7 @@ INSERT INTO vendas.orders (customer_id, total) VALUES (101, 150.00), (102, 89.90
 INSERT INTO vendas.order_items (order_id, product_id, quantity, price)
 SELECT o.order_id, v.product_id, v.quantity, v.price
 FROM vendas.orders o
-JOIN (VALUES (101,10,2,75.00), (102,20,1,89.90), (103,30,1,200.50))
+JOIN (VALUES (101,10,2,75.00), (102,20,1,89.90), (103,30,1,320.50))
   AS v(customer_id, product_id, quantity, price) USING (customer_id);
 
 ```
